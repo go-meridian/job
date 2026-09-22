@@ -2,7 +2,6 @@ package jobmgr
 
 import (
 	"context"
-	"log"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -17,13 +16,38 @@ type PanicHandler func(stack string)
 
 // Config JobManager 配置
 type Config struct {
-	PanicHandler PanicHandler // panic 处理，可选（nil 则使用 logger 打日志，logger 未初始化则 log.Printf 兜底）
+	PanicHandler PanicHandler // panic 处理，可选（nil 则使用 logger 打日志）
 }
 
 var (
 	mgr  *JobManager
 	once sync.Once
 )
+
+// ensure 保证单例已初始化，支持自动初始化和显式 Init
+func ensure() *JobManager {
+	once.Do(func() {
+		if mgr == nil {
+			mgr = newManager(nil)
+		}
+	})
+	return mgr
+}
+
+// newManager 创建 JobManager 实例
+func newManager(cfg *Config) *JobManager {
+	ctx, cancel := context.WithCancel(context.Background())
+	var ph PanicHandler
+	if cfg != nil {
+		ph = cfg.PanicHandler
+	}
+	return &JobManager{
+		ctxStop:      ctx,
+		cancel:       cancel,
+		wg:           new(sync.WaitGroup),
+		panicHandler: ph,
+	}
+}
 
 // JobManager 协程任务管理器
 type JobManager struct {
@@ -35,28 +59,23 @@ type JobManager struct {
 	running      atomic.Int64
 }
 
-// Init 初始化全局 JobManager（单例，仅首次调用生效）
-// cfg 为 nil 时使用默认配置
+// Init 显式初始化全局 JobManager（单例，仅首次调用生效）
+// cfg 为 nil 时使用默认配置；不调用 Init 时，首次使用会自动初始化
 func Init(cfg *Config) *JobManager {
 	once.Do(func() {
-		ctx, cancel := context.WithCancel(context.Background())
-		var ph PanicHandler
-		if cfg != nil {
-			ph = cfg.PanicHandler
-		}
-		mgr = &JobManager{
-			ctxStop:      ctx,
-			cancel:       cancel,
-			wg:           new(sync.WaitGroup),
-			panicHandler: ph,
-		}
+		mgr = newManager(cfg)
 	})
 	return mgr
 }
 
-// Mgr 获取全局 JobManager 实例（需先调用 Init）
+// Mgr 获取全局 JobManager 实例（未调用 Init 时自动使用默认配置初始化）
 func Mgr() *JobManager {
-	return mgr
+	return ensure()
+}
+
+// StopAll 包级便捷函数，通知所有任务停止并等待完成（带超时）
+func StopAll(timeout time.Duration) {
+	ensure().StopAll(timeout)
 }
 
 // AddJob 启动 goroutine 执行任务，带 panic 恢复
@@ -69,8 +88,6 @@ func (m *JobManager) AddJob(job func()) {
 					m.panicHandler(stack)
 				} else if l := logger.Get(); l != nil {
 					l.Error("[jobmgr] panic recovered", logger.String("stack", stack))
-				} else {
-					log.Printf("[jobmgr] panic recovered:\n%s", stack)
 				}
 			}
 		}()
@@ -110,9 +127,6 @@ func (m *JobManager) StopAll(timeout time.Duration) {
 	m.stopOnce.Do(func() {
 		m.cancel()
 
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
-		defer cancel()
-
 		done := make(chan struct{})
 		go func() {
 			m.wg.Wait()
@@ -121,7 +135,7 @@ func (m *JobManager) StopAll(timeout time.Duration) {
 
 		select {
 		case <-done:
-		case <-ctx.Done():
+		case <-time.After(timeout):
 			if l := logger.Get(); l != nil {
 				l.Error("[jobmgr] stop timeout",
 					logger.Duration("timeout", timeout),
@@ -133,7 +147,7 @@ func (m *JobManager) StopAll(timeout time.Duration) {
 
 // captureStack 获取 panic 堆栈
 func captureStack() string {
-	buf := make([]byte, 64*1024)
+	buf := make([]byte, 4*1024)
 	n := runtime.Stack(buf, false)
 	return string(buf[:n])
 }

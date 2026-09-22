@@ -12,7 +12,7 @@ Module: `github.com/go-meridian/job` — package name is `jobmgr` (not `job`).
 - **Library only** — no `main` package, no binary output, no `cmd/` directory
 - **Dependencies**: `github.com/go-meridian/logger` (zap-based), with local replace `../logger` in go.mod
 - **Go version**: 1.27.1 (set in go.mod)
-- **Singleton pattern**: `Init()` + `Mgr()` via `sync.Once`; `Init` is safe to call multiple times
+- **Singleton pattern**: `Init()` + `Mgr()` via `sync.Once`; `Init` is safe to call multiple times; **auto-init** on first use if `Init` not called
 - **Logging**: uses `github.com/go-meridian/logger` package (`logger.Get()` returns `*zap.Logger`); no custom Logger interface
 
 ## Build & Verify
@@ -29,6 +29,6 @@ No vendor directory, no tests yet. Add `_test.go` files alongside source.
 - All doc comments and error messages in Chinese
 - `PanicHandler` callback receives the full stack string; callers decide how to report
 - `AddJob` captures panics; `AddJobNaked` does not — this is intentional, not a bug
-- `StopAll` is safe to call multiple times (`sync.Once`); only logs `Error` on timeout (with remaining task count)
-- `AddJob` panic output priority: `PanicHandler` > `logger.Error` > `fmt.Printf` (no duplication)
+- `StopAll` is safe to call multiple times (`sync.Once`); only logs `Error` on timeout (with remaining task count); package-level `StopAll(timeout)` also available
+- `AddJob` panic output priority: `PanicHandler` > `logger.Error`（无 logger 时静默跳过）
 - `Running()` returns current active goroutine count via `atomic.Int64`
